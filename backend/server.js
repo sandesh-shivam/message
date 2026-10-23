@@ -15,7 +15,7 @@ import privacyRoutes from './routes/privacyRoutes.js';
 import { socketAuthMiddleware } from './middleware/authMiddleware.js';
 import { setupSocketHandlers } from './sockets/socketHandler.js';
 import { apiLimiter, authLimiter } from './middleware/rateLimiter.js';
-import { initializeDatabase } from './config/db.js';
+import { initializeDatabase, query } from './config/db.js';
 import { initializeStorageBucket } from './config/storage.js';
 import { ChatService } from './services/ChatService.js';
 
@@ -127,6 +127,16 @@ const startServer = async () => {
   try {
     if (process.env.DATABASE_URL) {
       await initializeDatabase();
+
+      // Presence is tracked in process-local socket maps. After a crash/restart those
+      // maps are empty, so persisted online flags must be reconciled before accepting
+      // connections. For multi-instance deployments, use shared presence coordination.
+      const stalePresence = await query(
+        'UPDATE users SET is_online = FALSE WHERE is_online IS TRUE'
+      );
+      if (stalePresence.rowCount > 0) {
+        console.log(`🧹 Startup presence reconciliation: cleared ${stalePresence.rowCount} stale online flag(s).`);
+      }
     }
 
     await initializeStorageBucket();
