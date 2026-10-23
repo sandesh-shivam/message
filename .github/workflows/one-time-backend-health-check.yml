@@ -1,9 +1,6 @@
 name: One-time Production Backend Health Check
 
 on:
-  pull_request:
-    branches:
-      - master
   push:
     branches:
       - ops/verify-backend-health-once
@@ -13,7 +10,7 @@ permissions:
 
 jobs:
   backend-health:
-    name: Check live backend health endpoint
+    name: Check live backend and database-backed auth path
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
@@ -21,11 +18,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          URL="https://learnai1234.duckdns.org/api/health"
+          URL="https://learnai1234.duckdns.org"
+          healthy=false
           for attempt in 1 2 3; do
             echo "Health check attempt ${attempt}/3"
             set +e
-            response="$(curl --silent --show-error --max-time 15 --write-out '\n%{http_code}' "$URL")"
+            response="$(curl --silent --show-error --max-time 15 --write-out '\n%{http_code}' "$URL/api/health")"
             curl_exit=$?
             set -e
             if [[ "$curl_exit" -ne 0 ]]; then
@@ -33,24 +31,65 @@ jobs:
             fi
             status="${response##*$'\n'}"
             body="${response%$'\n'*}"
-            echo "HTTP status: ${status}"
-            echo "Response body: ${body}"
+            echo "Health HTTP status: ${status}"
             if [[ "$status" == "200" ]] && printf '%s' "$body" | node -e '
               let body = "";
               process.stdin.on("data", chunk => body += chunk);
               process.stdin.on("end", () => {
                 try {
                   const value = JSON.parse(body);
-                  if (value.status !== "ok") process.exit(1);
+                  if (value.status !== "ok" || value.databaseConnected !== true ||
+                      !String(value.architecture || "").includes("Supabase PostgreSQL Active")) {
+                    process.exit(1);
+                  }
                 } catch {
                   process.exit(1);
                 }
               });
             '; then
-              echo "Production backend health endpoint is responding."
-              exit 0
+              healthy=true
+              break
             fi
             if [[ "$attempt" -lt 3 ]]; then sleep 5; fi
           done
-          echo "Production backend health check failed after 3 attempts." >&2
-          exit 1
+
+          if [[ "$healthy" != "true" ]]; then
+            echo "Production health endpoint did not confirm a configured PostgreSQL backend." >&2
+            exit 1
+          fi
+
+      - name: Verify a real database-backed login lookup without creating an account
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://learnai1234.duckdns.org"
+          probe_username="__health_probe_$(date +%s)_${RANDOM}__"
+          set +e
+          response="$(curl --silent --show-error --max-time 15 --write-out '\n%{http_code}' \
+            -H "Content-Type: application/json" \
+            --data "{\"username\":\"$probe_username\",\"password\":\"probe-only-invalid-password\"}" \
+            "$URL/api/auth/login")"
+          curl_exit=$?
+          set -e
+          if [[ "$curl_exit" -ne 0 ]]; then
+            echo "Could not reach the login endpoint." >&2
+            exit 1
+          fi
+          status="${response##*$'\n'}"
+          body="${response%$'\n'*}"
+          if [[ "$status" != "400" ]] || ! printf '%s' "$body" | node -e '
+            let body = "";
+            process.stdin.on("data", chunk => body += chunk);
+            process.stdin.on("end", () => {
+              try {
+                const value = JSON.parse(body);
+                if (value.message !== "Invalid username or password") process.exit(1);
+              } catch {
+                process.exit(1);
+              }
+            });
+          '; then
+            echo "Login lookup did not return the expected invalid-credentials response; database-backed auth is not confirmed." >&2
+            exit 1
+          fi
+          echo "Database-backed user lookup succeeded. The probe used a non-existent username and created no account."
