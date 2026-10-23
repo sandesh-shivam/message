@@ -1,0 +1,32 @@
+name: Backend Presence Tests
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master, "fix/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  presence-tests:
+    name: Presence lifecycle tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - name: Install backend dependencies
+        run: npm ci
+      - name: Run presence lifecycle tests
+        run: npm test
