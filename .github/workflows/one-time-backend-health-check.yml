@@ -21,9 +21,15 @@ jobs:
           URL="https://learnai1234.duckdns.org/api/health"
           for attempt in 1 2 3; do
             echo "Health check attempt ${attempt}/3"
-            response="$(curl --silent --show-error --max-time 15 --write-out $'\\n%{http_code}' "$URL")" || response=$'\\n000'
-            status="${response##*$'\\n'}"
-            body="${response%$'\\n'*}"
+            set +e
+            response="$(curl --silent --show-error --max-time 15 --write-out '\n%{http_code}' "$URL")"
+            curl_exit=$?
+            set -e
+            if [[ "$curl_exit" -ne 0 ]]; then
+              response=$'\n000'
+            fi
+            status="${response##*$'\n'}"
+            body="${response%$'\n'*}"
             echo "HTTP status: ${status}"
             echo "Response body: ${body}"
             if [[ "$status" == "200" ]] && printf '%s' "$body" | node -e '
