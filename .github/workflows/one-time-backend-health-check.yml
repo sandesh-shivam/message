@@ -1,6 +1,9 @@
 name: One-time Production Backend Health Check
 
 on:
+  pull_request:
+    branches:
+      - master
   push:
     branches:
       - ops/verify-backend-health-once
