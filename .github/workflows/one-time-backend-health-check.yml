@@ -1,0 +1,47 @@
+name: One-time Production Backend Health Check
+
+on:
+  push:
+    branches:
+      - ops/verify-backend-health-once
+
+permissions:
+  contents: read
+
+jobs:
+  backend-health:
+    name: Check live backend health endpoint
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Request production health endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://learnai1234.duckdns.org/api/health"
+          for attempt in 1 2 3; do
+            echo "Health check attempt ${attempt}/3"
+            response="$(curl --silent --show-error --max-time 15 --write-out $'\\n%{http_code}' "$URL")" || response=$'\\n000'
+            status="${response##*$'\\n'}"
+            body="${response%$'\\n'*}"
+            echo "HTTP status: ${status}"
+            echo "Response body: ${body}"
+            if [[ "$status" == "200" ]] && printf '%s' "$body" | node -e '
+              let body = "";
+              process.stdin.on("data", chunk => body += chunk);
+              process.stdin.on("end", () => {
+                try {
+                  const value = JSON.parse(body);
+                  if (value.status !== "ok") process.exit(1);
+                } catch {
+                  process.exit(1);
+                }
+              });
+            '; then
+              echo "Production backend health endpoint is responding."
+              exit 0
+            fi
+            if [[ "$attempt" -lt 3 ]]; then sleep 5; fi
+          done
+          echo "Production backend health check failed after 3 attempts." >&2
+          exit 1
