@@ -5,7 +5,10 @@ import fs from 'fs';
 import path from 'path';
 
 const API = 'http://localhost:5000/api';
-const DB_URL = 'postgresql://postgres:RamayaN2006%40@db.zhvzwjrwhypdfeobsohp.supabase.co:5432/postgres';
+const DB_URL = process.env.DATABASE_URL;
+if (!DB_URL) {
+  throw new Error('DATABASE_URL environment variable is required to run this verification suite.');
+}
 
 async function runEndToEndVerification() {
   console.log('================================================================');

@@ -11,10 +11,73 @@ const onlineUsersMap = new Map(); // Key: userId, Value: Set of socket.ids
 const userSocketsMap = new Map(); // Key: socket.id, Value: userId
 const typingMap = new Map();       // Key: conversationId, Value: userId
 
+// Keep database presence writes ordered per user. Rapid connect/disconnect events
+// must not let an older write overwrite the newest connection state.
+const presenceSyncQueues = new Map();
+const lastPublishedPresence = new Map();
+
+const isUserOnline = (userId) => {
+  const sockets = onlineUsersMap.get(userId);
+  return Boolean(sockets && sockets.size > 0);
+};
+
+const syncPresence = (io, userId) => {
+  const previous = presenceSyncQueues.get(userId) || Promise.resolve();
+  const task = previous.catch(() => {}).then(async () => {
+    let desiredOnline = isUserOnline(userId);
+
+    // If socket state changes while a database write is in flight, repeat with
+    // the latest state before publishing presence to other clients.
+    while (true) {
+      const lastSeen = desiredOnline ? undefined : new Date().toISOString();
+      await userRepository.updateOnlineStatus(userId, desiredOnline, lastSeen);
+      const currentOnline = isUserOnline(userId);
+      if (currentOnline === desiredOnline) break;
+      desiredOnline = currentOnline;
+    }
+
+    const currentlyOnline = isUserOnline(userId);
+    if (lastPublishedPresence.get(userId) !== currentlyOnline) {
+      lastPublishedPresence.set(userId, currentlyOnline);
+      io.emit('user_presence_change', {
+        userId,
+        isOnline: currentlyOnline,
+        lastSeen: new Date().toISOString()
+      });
+    }
+  }).catch((err) => {
+    console.error('Presence sync error:', err.message);
+  });
+
+  presenceSyncQueues.set(userId, task);
+  return task.finally(() => {
+    if (presenceSyncQueues.get(userId) === task) {
+      presenceSyncQueues.delete(userId);
+    }
+  });
+};
+
 export const setupSocketHandlers = (io) => {
   io.on('connection', async (socket) => {
     const userId = socket.user.id;
     userSocketsMap.set(socket.id, userId);
+
+    // Register disconnect handling before any asynchronous database work. Otherwise,
+    // a very fast disconnect can happen before its listener exists, leaving a dead
+    // socket in the in-memory presence map forever.
+    socket.on('disconnect', async () => {
+      userSocketsMap.delete(socket.id);
+
+      const userSockets = onlineUsersMap.get(userId);
+      if (userSockets) {
+        userSockets.delete(socket.id);
+        if (userSockets.size === 0) {
+          onlineUsersMap.delete(userId);
+        }
+      }
+
+      await syncPresence(io, userId);
+    });
 
     // Track multi-device / multi-tab socket connections per user
     if (!onlineUsersMap.has(userId)) {
@@ -22,14 +85,9 @@ export const setupSocketHandlers = (io) => {
     }
     onlineUsersMap.get(userId).add(socket.id);
 
-    // Update database status to online on first active connection
+    // Schedule presence persistence without blocking socket event registration.
     if (onlineUsersMap.get(userId).size === 1) {
-      await userRepository.updateOnlineStatus(userId, true);
-      io.emit('user_presence_change', {
-        userId,
-        isOnline: true,
-        lastSeen: new Date().toISOString()
-      });
+      void syncPresence(io, userId);
     }
 
     // Join personal user room for direct signaling & notifications
@@ -252,24 +310,5 @@ export const setupSocketHandlers = (io) => {
       }
     });
 
-    // --- DISCONNECT HANDLER ---
-    socket.on('disconnect', async () => {
-      userSocketsMap.delete(socket.id);
-
-      const userSockets = onlineUsersMap.get(userId);
-      if (userSockets) {
-        userSockets.delete(socket.id);
-        if (userSockets.size === 0) {
-          onlineUsersMap.delete(userId);
-          const lastSeen = new Date().toISOString();
-          await userRepository.updateOnlineStatus(userId, false, lastSeen);
-          io.emit('user_presence_change', {
-            userId,
-            isOnline: false,
-            lastSeen
-          });
-        }
-      }
-    });
   });
 };

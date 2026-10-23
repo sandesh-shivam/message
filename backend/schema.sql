@@ -75,6 +75,16 @@ CREATE TABLE IF NOT EXISTS reports (
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Default-deny direct PostgREST access to application tables.
+-- The backend uses its trusted PostgreSQL connection; direct client access should go
+-- through authenticated backend endpoints. No client policies are intentionally created.
+ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.conversations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.messages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.media ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.blocks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.reports ENABLE ROW LEVEL SECURITY;
+
 -- Indexes for maximum query performance (Executed after ALTER TABLE ensures columns exist)
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
